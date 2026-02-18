@@ -245,6 +245,8 @@ export interface CompanionEnv {
   name: string;
   slug: string;
   variables: Record<string, string>;
+  claudeSettings?: string;
+  codexConfig?: string[];
   dockerfile?: string;
   imageTag?: string;
   baseImage?: string;
@@ -494,6 +496,8 @@ export const api = {
   getEnv: (slug: string) =>
     get<CompanionEnv>(`/envs/${encodeURIComponent(slug)}`),
   createEnv: (name: string, variables: Record<string, string>, docker?: {
+    claudeSettings?: string;
+    codexConfig?: string[];
     dockerfile?: string;
     baseImage?: string;
     ports?: number[];
@@ -506,6 +510,8 @@ export const api = {
     data: {
       name?: string;
       variables?: Record<string, string>;
+      claudeSettings?: string | null;
+      codexConfig?: string[] | null;
       dockerfile?: string;
       baseImage?: string;
       ports?: number[];

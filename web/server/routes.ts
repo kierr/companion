@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { streamSSE, type SSEStreamingApi } from "hono/streaming";
+import { parse as parseToml } from "smol-toml";
 import { execSync } from "node:child_process";
 import { resolveBinary } from "./path-resolver.js";
 import { readdir, readFile, writeFile, stat } from "node:fs/promises";
@@ -75,6 +76,87 @@ function resolveBranchDiffBases(
   }
 
   return ["main"];
+}
+
+/**
+ * Normalizes and validates Claude settings JSON.
+ * Accepts undefined, null, or a JSON string.
+ * Returns the validated JSON string or an error message.
+ */
+function normalizeClaudeSettings(input: unknown): { ok: true; value?: string } | { ok: false; error: string } {
+  if (input === undefined || input === null) return { ok: true, value: undefined };
+  if (typeof input !== "string") {
+    return { ok: false, error: "claudeSettings must be a JSON object string" };
+  }
+
+  const trimmed = input.trim();
+  if (!trimmed) return { ok: true, value: undefined };
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { ok: false, error: "claudeSettings must be a JSON object (not array or primitive)" };
+    }
+    return { ok: true, value: JSON.stringify(parsed) };
+  } catch {
+    return { ok: false, error: "claudeSettings must be valid JSON" };
+  }
+}
+
+const CODEX_CONFIG_KEY_PATH_RE = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/;
+
+/**
+ * Normalizes and validates Codex configuration entries.
+ * Accepts undefined, null, a newline-delimited string, or a string array.
+ * Each entry must be in key=value format with valid TOML values.
+ */
+function normalizeCodexConfig(input: unknown): { ok: true; value?: string[] } | { ok: false; error: string } {
+  if (input === undefined || input === null) return { ok: true, value: undefined };
+
+  let entries: string[] = [];
+  if (typeof input === "string") {
+    entries = input
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+  } else if (Array.isArray(input)) {
+    if (!input.every((item) => typeof item === "string")) {
+      return { ok: false, error: "codexConfig entries must be strings in key=value form" };
+    }
+    // Reject entries with embedded newlines
+    for (const item of input) {
+      if (item.includes("\n") || item.includes("\r")) {
+        return { ok: false, error: "codexConfig array entries must not contain newlines" };
+      }
+    }
+    entries = input.map((line) => line.trim()).filter((line) => line.length > 0);
+  } else {
+    return { ok: false, error: "codexConfig must be a newline-delimited string or string array" };
+  }
+
+  if (entries.length === 0) return { ok: true, value: undefined };
+
+  for (const entry of entries) {
+    const eqIdx = entry.indexOf("=");
+    if (eqIdx <= 0) {
+      return { ok: false, error: `codexConfig entry "${entry}" must use key=value format` };
+    }
+    const key = entry.slice(0, eqIdx).trim();
+    if (!key) {
+      return { ok: false, error: `codexConfig entry "${entry}" has an empty key` };
+    }
+    if (!CODEX_CONFIG_KEY_PATH_RE.test(key)) {
+      return { ok: false, error: `codexConfig entry "${entry}" must use a dotted key path before '=' (for example foo.bar.baz=value)` };
+    }
+    const value = entry.slice(eqIdx + 1).trim();
+    try {
+      parseToml(`value = ${value}`);
+    } catch {
+      return { ok: false, error: `codexConfig entry "${entry}" must have a valid TOML value after '='` };
+    }
+  }
+
+  return { ok: true, value: entries };
 }
 
 export function createRoutes(
@@ -165,6 +247,26 @@ export function createRoutes(
 
       // Resolve Docker image from environment or explicit container config
       const companionEnv = body.envSlug ? envManager.getEnv(body.envSlug) : null;
+      let claudeSettings: string | undefined;
+      if (backend === "claude") {
+        const normalizedEnvClaudeSettings = normalizeClaudeSettings(companionEnv?.claudeSettings);
+        if (!normalizedEnvClaudeSettings.ok) {
+          return c.json({
+            error: `Selected environment has invalid claudeSettings: ${normalizedEnvClaudeSettings.error}`,
+          }, 400);
+        }
+        claudeSettings = normalizedEnvClaudeSettings.value;
+      }
+      let codexConfigOverrides: string[] | undefined;
+      if (backend === "codex") {
+        const normalizedEnvCodexConfig = normalizeCodexConfig(companionEnv?.codexConfig);
+        if (!normalizedEnvCodexConfig.ok) {
+          return c.json({
+            error: `Selected environment has invalid codexConfig: ${normalizedEnvCodexConfig.error}`,
+          }, 400);
+        }
+        codexConfigOverrides = normalizedEnvCodexConfig.value;
+      }
       let effectiveImage = companionEnv
         ? (body.envSlug ? envManager.getEffectiveImage(body.envSlug) : null)
         : (body.container?.image || null);
@@ -315,8 +417,10 @@ export function createRoutes(
         codexSandbox: backend === "codex" && body.codexInternetAccess === true
           ? "danger-full-access"
           : "workspace-write",
+        codexConfigOverrides,
         allowedTools: body.allowedTools,
         env: envVars,
+        claudeSettings,
         backendType: backend,
         containerId,
         containerName,
@@ -383,6 +487,36 @@ export function createRoutes(
 
         let envVars: Record<string, string> | undefined = body.env;
         const companionEnv = body.envSlug ? envManager.getEnv(body.envSlug) : null;
+        let claudeSettings: string | undefined;
+        if (backend === "claude") {
+          const normalizedEnvClaudeSettings = normalizeClaudeSettings(companionEnv?.claudeSettings);
+          if (!normalizedEnvClaudeSettings.ok) {
+            await stream.writeSSE({
+              event: "error",
+              data: JSON.stringify({
+                error: `Selected environment has invalid claudeSettings: ${normalizedEnvClaudeSettings.error}`,
+                step: "resolving_env",
+              }),
+            });
+            return;
+          }
+          claudeSettings = normalizedEnvClaudeSettings.value;
+        }
+        let codexConfigOverrides: string[] | undefined;
+        if (backend === "codex") {
+          const normalizedEnvCodexConfig = normalizeCodexConfig(companionEnv?.codexConfig);
+          if (!normalizedEnvCodexConfig.ok) {
+            await stream.writeSSE({
+              event: "error",
+              data: JSON.stringify({
+                error: `Selected environment has invalid codexConfig: ${normalizedEnvCodexConfig.error}`,
+                step: "resolving_env",
+              }),
+            });
+            return;
+          }
+          codexConfigOverrides = normalizedEnvCodexConfig.value;
+        }
         if (body.envSlug && companionEnv) {
           envVars = { ...companionEnv.variables, ...body.env };
         }
@@ -646,8 +780,10 @@ export function createRoutes(
           codexSandbox: backend === "codex" && body.codexInternetAccess === true
             ? "danger-full-access"
             : "workspace-write",
+          codexConfigOverrides,
           allowedTools: body.allowedTools,
           env: envVars,
+          claudeSettings,
           backendType: backend,
           containerId,
           containerName,
@@ -1151,7 +1287,17 @@ export function createRoutes(
   api.post("/envs", async (c) => {
     const body = await c.req.json().catch(() => ({}));
     try {
+      const normalizedClaudeSettings = normalizeClaudeSettings(body.claudeSettings);
+      if (!normalizedClaudeSettings.ok) {
+        return c.json({ error: normalizedClaudeSettings.error }, 400);
+      }
+      const normalizedCodexConfig = normalizeCodexConfig(body.codexConfig);
+      if (!normalizedCodexConfig.ok) {
+        return c.json({ error: normalizedCodexConfig.error }, 400);
+      }
       const env = envManager.createEnv(body.name, body.variables || {}, {
+        claudeSettings: normalizedClaudeSettings.value,
+        codexConfig: normalizedCodexConfig.value,
         dockerfile: body.dockerfile,
         baseImage: body.baseImage,
         ports: body.ports,
@@ -1168,7 +1314,16 @@ export function createRoutes(
     const slug = c.req.param("slug");
     const body = await c.req.json().catch(() => ({}));
     try {
-      const env = envManager.updateEnv(slug, {
+      const normalizedClaudeSettings = normalizeClaudeSettings(body.claudeSettings);
+      if (!normalizedClaudeSettings.ok) {
+        return c.json({ error: normalizedClaudeSettings.error }, 400);
+      }
+      const normalizedCodexConfig = normalizeCodexConfig(body.codexConfig);
+      if (!normalizedCodexConfig.ok) {
+        return c.json({ error: normalizedCodexConfig.error }, 400);
+      }
+
+      const updates: envManager.EnvUpdateFields = {
         name: body.name,
         variables: body.variables,
         dockerfile: body.dockerfile,
@@ -1177,7 +1332,15 @@ export function createRoutes(
         ports: body.ports,
         volumes: body.volumes,
         initScript: body.initScript,
-      });
+      };
+      if (Object.prototype.hasOwnProperty.call(body, "claudeSettings")) {
+        updates.claudeSettings = normalizedClaudeSettings.value;
+      }
+      if (Object.prototype.hasOwnProperty.call(body, "codexConfig")) {
+        updates.codexConfig = normalizedCodexConfig.value;
+      }
+
+      const env = envManager.updateEnv(slug, updates);
       if (!env) return c.json({ error: "Environment not found" }, 404);
       return c.json(env);
     } catch (e: unknown) {

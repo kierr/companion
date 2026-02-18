@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { createPortal } from "react-dom";
+import { parse as parseToml } from "smol-toml";
 import { api, type CompanionEnv } from "../api.js";
 
 interface Props {
@@ -12,7 +13,9 @@ interface VarRow {
   value: string;
 }
 
-type Tab = "variables" | "docker" | "ports" | "init";
+type Tab = "variables" | "docker" | "ports" | "init" | "settings";
+
+const CODEX_CONFIG_KEY_PATH_RE = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/;
 
 const DEFAULT_DOCKERFILE = `FROM the-companion:latest
 
@@ -24,6 +27,67 @@ WORKDIR /workspace
 CMD ["sleep", "infinity"]
 `;
 
+/**
+ * Normalizes and validates Claude settings JSON input from the UI.
+ * Returns the validated JSON string or an error message.
+ */
+function normalizeClaudeSettingsInput(input: string): { ok: true; value?: string } | { ok: false; error: string } {
+  const trimmed = input.trim();
+  if (!trimmed) return { ok: true, value: undefined };
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { ok: false, error: "Claude settings must be a JSON object (not array or primitive)." };
+    }
+    return { ok: true, value: JSON.stringify(parsed) };
+  } catch {
+    return { ok: false, error: "Claude settings must be valid JSON." };
+  }
+}
+
+/**
+ * Normalizes and validates Codex config input from the UI.
+ * Returns validated entries or an error message.
+ */
+function normalizeCodexConfigInput(input: string): { ok: true; value?: string[] } | { ok: false; error: string } {
+  const entries = input
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (entries.length === 0) return { ok: true, value: undefined };
+
+  for (const entry of entries) {
+    const eqIdx = entry.indexOf("=");
+    if (eqIdx <= 0) {
+      return { ok: false, error: `Codex config entry "${entry}" must use key=value format.` };
+    }
+    const key = entry.slice(0, eqIdx).trim();
+    if (!key) {
+      return { ok: false, error: `Codex config entry "${entry}" has an empty key.` };
+    }
+    if (!CODEX_CONFIG_KEY_PATH_RE.test(key)) {
+      return { ok: false, error: `Codex config entry "${entry}" must use a dotted key path before '=' (for example foo.bar.baz=value).` };
+    }
+    const value = entry.slice(eqIdx + 1).trim();
+    try {
+      parseToml(`value = ${value}`);
+    } catch {
+      return { ok: false, error: `Codex config entry "${entry}" must have a valid TOML value after '='.` };
+    }
+  }
+
+  // Reconstruct clean entries with normalized whitespace around =
+  const cleanEntries = entries.map(entry => {
+    const eqIdx = entry.indexOf("=");
+    const key = entry.slice(0, eqIdx).trim();
+    const value = entry.slice(eqIdx + 1).trim();
+    return `${key}=${value}`;
+  });
+
+  return { ok: true, value: cleanEntries };
+}
+
 export function EnvManager({ onClose, embedded = false }: Props) {
   const [envs, setEnvs] = useState<CompanionEnv[]>([]);
   const [loading, setLoading] = useState(true);
@@ -34,6 +98,8 @@ export function EnvManager({ onClose, embedded = false }: Props) {
   const [editBaseImage, setEditBaseImage] = useState("");
   const [editPorts, setEditPorts] = useState<number[]>([]);
   const [editInitScript, setEditInitScript] = useState("");
+  const [editClaudeSettings, setEditClaudeSettings] = useState("");
+  const [editCodexConfig, setEditCodexConfig] = useState("");
   const [error, setError] = useState("");
 
   // Docker build state
@@ -52,6 +118,8 @@ export function EnvManager({ onClose, embedded = false }: Props) {
   const [newBaseImage, setNewBaseImage] = useState("");
   const [newPorts, setNewPorts] = useState<number[]>([]);
   const [newInitScript, setNewInitScript] = useState("");
+  const [newClaudeSettings, setNewClaudeSettings] = useState("");
+  const [newCodexConfig, setNewCodexConfig] = useState("");
   const [newTab, setNewTab] = useState<Tab>("variables");
   const [creating, setCreating] = useState(false);
 
@@ -80,6 +148,8 @@ export function EnvManager({ onClose, embedded = false }: Props) {
     setEditBaseImage(env.baseImage || "");
     setEditPorts(env.ports || []);
     setEditInitScript(env.initScript || "");
+    setEditClaudeSettings(env.claudeSettings || "");
+    setEditCodexConfig((env.codexConfig || []).join("\n"));
     setError("");
     setBuildLog("");
     setShowBuildLog(false);
@@ -97,10 +167,24 @@ export function EnvManager({ onClose, embedded = false }: Props) {
       const k = row.key.trim();
       if (k) variables[k] = row.value;
     }
+
+    const normalizedClaudeSettings = normalizeClaudeSettingsInput(editClaudeSettings);
+    if (!normalizedClaudeSettings.ok) {
+      setError(normalizedClaudeSettings.error);
+      return;
+    }
+    const normalizedCodexConfig = normalizeCodexConfigInput(editCodexConfig);
+    if (!normalizedCodexConfig.ok) {
+      setError(normalizedCodexConfig.error);
+      return;
+    }
     try {
       await api.updateEnv(editingSlug, {
         name: editName.trim() || undefined,
         variables,
+        // Use null to preserve explicit clears through JSON serialization.
+        claudeSettings: normalizedClaudeSettings.value ?? null,
+        codexConfig: normalizedCodexConfig.value ?? null,
         dockerfile: editDockerfile || undefined,
         baseImage: editBaseImage || undefined,
         ports: editPorts.length > 0 ? editPorts : undefined,
@@ -133,8 +217,23 @@ export function EnvManager({ onClose, embedded = false }: Props) {
       const k = row.key.trim();
       if (k) variables[k] = row.value;
     }
+
+    const normalizedClaudeSettings = normalizeClaudeSettingsInput(newClaudeSettings);
+    if (!normalizedClaudeSettings.ok) {
+      setError(normalizedClaudeSettings.error);
+      setCreating(false);
+      return;
+    }
+    const normalizedCodexConfig = normalizeCodexConfigInput(newCodexConfig);
+    if (!normalizedCodexConfig.ok) {
+      setError(normalizedCodexConfig.error);
+      setCreating(false);
+      return;
+    }
     try {
       await api.createEnv(name, variables, {
+        claudeSettings: normalizedClaudeSettings.value,
+        codexConfig: normalizedCodexConfig.value,
         dockerfile: newDockerfile || undefined,
         baseImage: newBaseImage || undefined,
         ports: newPorts.length > 0 ? newPorts : undefined,
@@ -146,6 +245,8 @@ export function EnvManager({ onClose, embedded = false }: Props) {
       setNewBaseImage("");
       setNewPorts([]);
       setNewInitScript("");
+      setNewClaudeSettings("");
+      setNewCodexConfig("");
       setNewTab("variables");
       setError("");
       refresh();
@@ -201,7 +302,7 @@ export function EnvManager({ onClose, embedded = false }: Props) {
   function renderTabs(activeTab: Tab, setTab: (t: Tab) => void) {
     return (
       <div className="flex gap-0.5 border-b border-cc-border mb-2.5">
-        {(["variables", "docker", "ports", "init"] as Tab[]).map((t) => (
+        {(["variables", "docker", "ports", "init", "settings"] as Tab[]).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -385,6 +486,50 @@ export function EnvManager({ onClose, embedded = false }: Props) {
     );
   }
 
+  function renderClaudeSettingsTab(
+    claudeSettings: string,
+    setClaudeSettings: (v: string) => void,
+    codexConfig: string,
+    setCodexConfig: (v: string) => void,
+  ) {
+    return (
+      <div className="space-y-3">
+        <div>
+          <label className="block text-[11px] text-cc-muted mb-1">
+            JSON <span className="text-amber-500">(Claude-only)</span>
+          </label>
+          <textarea
+            value={claudeSettings}
+            onChange={(e) => setClaudeSettings(e.target.value)}
+            placeholder={"{\"permissions\": {\n      \"deny\": [\"WebSearch\"]\n    }}"}
+            rows={8}
+            className="w-full px-3 py-2 text-[11px] font-mono-code bg-cc-input-bg border border-cc-border rounded-md text-cc-fg placeholder:text-cc-muted focus:outline-none focus:border-cc-primary/50 resize-y"
+            style={{ minHeight: "100px" }}
+          />
+        </div>
+        <p className="text-[10px] text-cc-muted">
+          A JSON object passed to Claude Code with <code className="bg-cc-hover px-1 rounded">--settings</code>. Nested values are merged into existing settings rather than replacing unrelated keys.
+        </p>
+        <div>
+          <label className="block text-[11px] text-cc-muted mb-1">
+            --config Overrides <span className="text-amber-500">(Codex-only)</span>
+          </label>
+          <textarea
+            value={codexConfig}
+            onChange={(e) => setCodexConfig(e.target.value)}
+            placeholder={"model=\"gpt-5-codex\"\nshell_environment_policy.inherit=\"all\""}
+            rows={6}
+            className="w-full px-3 py-2 text-[11px] font-mono-code bg-cc-input-bg border border-cc-border rounded-md text-cc-fg placeholder:text-cc-muted focus:outline-none focus:border-cc-primary/50 resize-y"
+            style={{ minHeight: "90px" }}
+          />
+        </div>
+        <p className="text-[10px] text-cc-muted">
+          One <code className="bg-cc-hover px-1 rounded">key=value</code> per line, passed to Codex as repeated <code className="bg-cc-hover px-1 rounded">-c/--config</code> flags. Keys use dotted paths (for example <code className="bg-cc-hover px-1 rounded">foo.bar.baz</code>), and values must be valid TOML (for example <code className="bg-cc-hover px-1 rounded">true</code>, <code className="bg-cc-hover px-1 rounded">42</code>, <code className="bg-cc-hover px-1 rounded">["a"]</code>, <code className="bg-cc-hover px-1 rounded">"all"</code>).
+        </p>
+      </div>
+    );
+  }
+
   const environmentsList = loading ? (
     <div className="text-sm text-cc-muted text-center py-6">Loading environments...</div>
   ) : envs.length === 0 ? (
@@ -461,6 +606,15 @@ export function EnvManager({ onClose, embedded = false }: Props) {
                   <div className="text-[11px] font-medium text-cc-muted mb-1.5">Init Script</div>
                   {renderInitScriptTab(editInitScript, setEditInitScript)}
                 </div>
+                <div>
+                  <div className="text-[11px] font-medium text-cc-muted mb-1.5">Settings</div>
+                  {renderClaudeSettingsTab(
+                    editClaudeSettings,
+                    setEditClaudeSettings,
+                    editCodexConfig,
+                    setEditCodexConfig,
+                  )}
+                </div>
               </div>
               <button
                 onClick={saveEdit}
@@ -509,6 +663,12 @@ export function EnvManager({ onClose, embedded = false }: Props) {
         {newTab === "docker" && renderDockerTab(newDockerfile, setNewDockerfile, newBaseImage, setNewBaseImage)}
         {newTab === "ports" && renderPortsTab(newPorts, setNewPorts)}
         {newTab === "init" && renderInitScriptTab(newInitScript, setNewInitScript)}
+        {newTab === "settings" && renderClaudeSettingsTab(
+          newClaudeSettings,
+          setNewClaudeSettings,
+          newCodexConfig,
+          setNewCodexConfig,
+        )}
         <button
           onClick={handleCreate}
           disabled={!newName.trim() || creating}

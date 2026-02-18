@@ -41,7 +41,8 @@
     "croner": "^10.0.1",
     "diff": "^8.0.3",
     "hono": "^4.7.0",
-    "posthog-js": "^1.347.2"
+    "posthog-js": "^1.347.2",
+    "smol-toml": "^1.6.0"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.0.0",

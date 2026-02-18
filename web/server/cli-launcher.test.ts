@@ -237,6 +237,81 @@ describe("launch", () => {
     expect(toolFlags).toEqual(["Read", "Write", "Bash"]);
   });
 
+  it("passes --settings for host Claude sessions", () => {
+    // Validate explicit arg forwarding for non-container Claude launches.
+    launcher.launch({
+      cwd: "/tmp/project",
+      claudeSettings: "{\"trace\":true}",
+    });
+
+    const [cmdAndArgs] = mockSpawn.mock.calls[0];
+    const settingsIdx = cmdAndArgs.indexOf("--settings");
+    expect(settingsIdx).toBeGreaterThan(-1);
+    expect(cmdAndArgs[settingsIdx + 1]).toBe("{\"trace\":true}");
+  });
+
+  it("passes --settings for containerized Claude sessions", () => {
+    launcher.launch({
+      cwd: "/tmp/project",
+      containerId: "abc123def456",
+      containerName: "companion-test",
+      claudeSettings: "{\"trace\":true}",
+    });
+
+    const [cmdAndArgs] = mockSpawn.mock.calls[0];
+    const bashCmd = cmdAndArgs[cmdAndArgs.length - 1];
+    expect(bashCmd).toContain("--settings");
+    expect(bashCmd).toContain("{\"trace\":true}");
+  });
+
+  it("redacts --settings values in spawn logs", () => {
+    // Security check: raw JSON settings must not be written to logs.
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    launcher.launch({
+      cwd: "/tmp/project",
+      claudeSettings: "{\"apiKey\":\"secret-value\"}",
+    });
+
+    const logOutput = logSpy.mock.calls.map((call) => call.join(" ")).join("\n");
+    expect(logOutput).toContain("--settings ***");
+    expect(logOutput).not.toContain("secret-value");
+    logSpy.mockRestore();
+  });
+
+  it("redacts containerized --settings values in spawn logs", () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    launcher.launch({
+      cwd: "/tmp/project",
+      containerId: "abc123def456",
+      containerName: "companion-test",
+      claudeSettings: "{\"apiKey\":\"secret-value\"}",
+    });
+
+    const logOutput = logSpy.mock.calls.map((call) => call.join(" ")).join("\n");
+    expect(logOutput).toContain("'--settings' ***");
+    expect(logOutput).not.toContain("secret-value");
+    logSpy.mockRestore();
+  });
+
+  it("fully redacts containerized --settings values that contain spaces", () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    launcher.launch({
+      cwd: "/tmp/project",
+      containerId: "abc123def456",
+      containerName: "companion-test",
+      claudeSettings: "{\"apiKey\":\"sensitive fragment\"}",
+    });
+
+    const logOutput = logSpy.mock.calls.map((call) => call.join(" ")).join("\n");
+    expect(logOutput).toContain("'--settings' ***");
+    expect(logOutput).not.toContain("sensitive");
+    expect(logOutput).not.toContain("fragment");
+    logSpy.mockRestore();
+  });
+
   it("resolves binary path via resolveBinary when not absolute", () => {
     mockResolveBinary.mockReturnValue("/usr/local/bin/claude-dev");
     launcher.launch({ claudeBinary: "claude-dev", cwd: "/tmp" });
@@ -358,6 +433,45 @@ describe("launch", () => {
     expect(cmdAndArgs).toContain("app-server");
     expect(cmdAndArgs).toContain("-c");
     expect(cmdAndArgs).toContain("tools.webSearch=false");
+  });
+
+  it("passes Codex config overrides as repeated -c flags", () => {
+    // Codex supports multiple -c key=value overrides; preserve order from env.
+    mockResolveBinary.mockReturnValue("/opt/fake/codex");
+    mockSpawn.mockReturnValueOnce(createMockCodexProc());
+
+    launcher.launch({
+      backendType: "codex",
+      cwd: "/tmp/project",
+      codexConfigOverrides: ["model=\"o3\"", "shell_environment_policy.inherit=all"],
+    });
+
+    const [cmdAndArgs] = mockSpawn.mock.calls[0];
+    const overrideValues = cmdAndArgs.reduce((acc: string[], arg: string, i: number) => {
+      if (arg === "-c") acc.push(cmdAndArgs[i + 1]);
+      return acc;
+    }, []);
+    expect(overrideValues).toContain("model=\"o3\"");
+    expect(overrideValues).toContain("shell_environment_policy.inherit=all");
+  });
+
+  it("fully redacts containerized Codex -c values that contain spaces", () => {
+    mockSpawn.mockReturnValueOnce(createMockCodexProc());
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    launcher.launch({
+      backendType: "codex",
+      cwd: "/tmp/project",
+      containerId: "abc123def456",
+      containerName: "companion-test",
+      codexConfigOverrides: ["model=\"sensitive fragment\""],
+    });
+
+    const logOutput = logSpy.mock.calls.map((call) => call.join(" ")).join("\n");
+    expect(logOutput).toContain("'-c' ***");
+    expect(logOutput).not.toContain("sensitive");
+    expect(logOutput).not.toContain("fragment");
+    logSpy.mockRestore();
   });
 
   it("spawns codex via sibling node binary to bypass shebang issues", () => {
@@ -659,6 +773,56 @@ describe("relaunch", () => {
     const [relaunchCmd] = mockSpawn.mock.calls[1];
     expect(relaunchCmd).toContain("-e");
     expect(relaunchCmd).toContain("CLAUDE_CODE_OAUTH_TOKEN=tok-test");
+  });
+
+  it("reuses claudeSettings during relaunch", async () => {
+    let resolveFirst: (code: number) => void;
+    const firstProc = {
+      pid: 12345,
+      kill: vi.fn(() => { resolveFirst(0); }),
+      exited: new Promise<number>((r) => { resolveFirst = r; }),
+      stdout: null,
+      stderr: null,
+    };
+    mockSpawn.mockReturnValueOnce(firstProc);
+
+    launcher.launch({
+      cwd: "/tmp/project",
+      claudeSettings: "{\"trace\":true}",
+    });
+
+    const secondProc = createMockProc(54321);
+    mockSpawn.mockReturnValueOnce(secondProc);
+
+    const result = await launcher.relaunch("test-session-id");
+    expect(result).toEqual({ ok: true });
+
+    const [relaunchCmd] = mockSpawn.mock.calls[1];
+    const settingsIdx = relaunchCmd.indexOf("--settings");
+    expect(settingsIdx).toBeGreaterThan(-1);
+    expect(relaunchCmd[settingsIdx + 1]).toBe("{\"trace\":true}");
+  });
+
+  it("reuses codexConfigOverrides during codex relaunch", async () => {
+    mockResolveBinary.mockReturnValue("/opt/fake/codex");
+    mockSpawn.mockReturnValueOnce(createMockCodexProc(12345));
+
+    launcher.launch({
+      backendType: "codex",
+      cwd: "/tmp/project",
+      codexConfigOverrides: ["model=\"o3\""],
+    });
+
+    mockSpawn.mockReturnValueOnce(createMockCodexProc(54321));
+    const result = await launcher.relaunch("test-session-id");
+    expect(result).toEqual({ ok: true });
+
+    const [relaunchCmd] = mockSpawn.mock.calls[1];
+    const overrideValues = relaunchCmd.reduce((acc: string[], arg: string, i: number) => {
+      if (arg === "-c") acc.push(relaunchCmd[i + 1]);
+      return acc;
+    }, []);
+    expect(overrideValues).toContain("model=\"o3\"");
   });
 
   it("returns error for unknown session", async () => {
