@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { createPortal } from "react-dom";
+import { parse as parseToml } from "smol-toml";
 import { api, type CompanionEnv } from "../api.js";
 
 interface Props {
@@ -13,6 +14,8 @@ interface VarRow {
 }
 
 type Tab = "variables" | "docker" | "ports" | "init" | "settings";
+
+const CODEX_CONFIG_KEY_PATH_RE = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/;
 
 const DEFAULT_DOCKERFILE = `FROM the-companion:latest
 
@@ -54,6 +57,15 @@ function normalizeCodexConfigInput(input: string): { ok: true; value?: string[] 
     const key = entry.slice(0, eqIdx).trim();
     if (!key) {
       return { ok: false, error: `Codex config entry "${entry}" has an empty key.` };
+    }
+    if (!CODEX_CONFIG_KEY_PATH_RE.test(key)) {
+      return { ok: false, error: `Codex config entry "${entry}" must use a dotted key path before '=' (for example foo.bar.baz=value).` };
+    }
+    const value = entry.slice(eqIdx + 1).trim();
+    try {
+      parseToml(`value = ${value}`);
+    } catch {
+      return { ok: false, error: `Codex config entry "${entry}" must have a valid TOML value after '='.` };
     }
   }
 
@@ -468,36 +480,35 @@ export function EnvManager({ onClose, embedded = false }: Props) {
       <div className="space-y-3">
         <div>
           <label className="block text-[11px] text-cc-muted mb-1">
-            Claude Settings JSON <span className="text-amber-500">(Claude-only)</span>
+            JSON <span className="text-amber-500">(Claude-only)</span>
           </label>
           <textarea
             value={claudeSettings}
             onChange={(e) => setClaudeSettings(e.target.value)}
-            placeholder='{"featureFlag": true}'
+            placeholder={"{\"permissions\": {\n      \"deny\": [\"WebSearch\"]\n    }}"}
             rows={8}
             className="w-full px-3 py-2 text-[11px] font-mono-code bg-cc-input-bg border border-cc-border rounded-md text-cc-fg placeholder:text-cc-muted focus:outline-none focus:border-cc-primary/50 resize-y"
             style={{ minHeight: "100px" }}
           />
         </div>
         <p className="text-[10px] text-cc-muted">
-          Passed to Claude Code as <code className="bg-cc-hover px-1 rounded">--settings</code>. Must be a JSON object.
+          A JSON object passed to Claude Code with <code className="bg-cc-hover px-1 rounded">--settings</code>. Nested values are merged into existing settings rather than replacing unrelated keys.
         </p>
         <div>
           <label className="block text-[11px] text-cc-muted mb-1">
-            Codex Config Overrides <span className="text-amber-500">(Codex-only)</span>
+            --config Overrides <span className="text-amber-500">(Codex-only)</span>
           </label>
           <textarea
             value={codexConfig}
             onChange={(e) => setCodexConfig(e.target.value)}
-            placeholder={"model=\"o3\"\nshell_environment_policy.inherit=all"}
+            placeholder={"model=\"gpt-5-codex\"\nshell_environment_policy.inherit=\"all\""}
             rows={6}
             className="w-full px-3 py-2 text-[11px] font-mono-code bg-cc-input-bg border border-cc-border rounded-md text-cc-fg placeholder:text-cc-muted focus:outline-none focus:border-cc-primary/50 resize-y"
             style={{ minHeight: "90px" }}
           />
         </div>
         <p className="text-[10px] text-cc-muted">
-          One <code className="bg-cc-hover px-1 rounded">key=value</code> per line, passed as repeated{" "}
-          <code className="bg-cc-hover px-1 rounded">-c</code> flags.
+          One <code className="bg-cc-hover px-1 rounded">key=value</code> per line, passed to Codex as repeated <code className="bg-cc-hover px-1 rounded">-c/--config</code> flags. Keys use dotted paths (for example <code className="bg-cc-hover px-1 rounded">foo.bar.baz</code>), and values must be valid TOML (for example <code className="bg-cc-hover px-1 rounded">true</code>, <code className="bg-cc-hover px-1 rounded">42</code>, <code className="bg-cc-hover px-1 rounded">["a"]</code>, <code className="bg-cc-hover px-1 rounded">"all"</code>).
         </p>
       </div>
     );

@@ -80,7 +80,7 @@ describe("EnvManager existing env edit", () => {
     fireEvent.click(screen.getByText("Edit"));
 
     // Existing value should be surfaced back to the user.
-    const settingsArea = screen.getByPlaceholderText("{\"featureFlag\": true}") as HTMLTextAreaElement;
+    const settingsArea = screen.getByPlaceholderText(/"deny": \["WebSearch"\]/) as HTMLTextAreaElement;
     expect(settingsArea.value).toBe('{ "featureFlag": true }');
 
     fireEvent.change(settingsArea, { target: { value: '{ "nested": { "x": 1 } }' } });
@@ -100,7 +100,7 @@ describe("EnvManager existing env edit", () => {
         name: "Companion",
         slug: "companion",
         variables: {},
-        codexConfig: ["model=\"o3\""],
+        codexConfig: ["model=\"gpt-5-codex\""],
         createdAt: Date.now(),
         updatedAt: Date.now(),
       },
@@ -110,15 +110,15 @@ describe("EnvManager existing env edit", () => {
     await screen.findByText("Companion");
     fireEvent.click(screen.getByText("Edit"));
 
-    const codexArea = screen.getByPlaceholderText(/shell_environment_policy\.inherit=all/) as HTMLTextAreaElement;
-    expect(codexArea.value).toBe("model=\"o3\"");
-    fireEvent.change(codexArea, { target: { value: "model=\"o3\"\nsandbox_permissions=[\"disk-full-read-access\"]" } });
+    const codexArea = screen.getByPlaceholderText(/shell_environment_policy\.inherit="all"/) as HTMLTextAreaElement;
+    expect(codexArea.value).toBe("model=\"gpt-5-codex\"");
+    fireEvent.change(codexArea, { target: { value: "model=\"gpt-5-codex\"\nsandbox_permissions=[\"disk-full-read-access\"]" } });
     fireEvent.click(screen.getByText("Save"));
 
     await waitFor(() => {
       expect(mockUpdateEnv).toHaveBeenCalledWith(
         "companion",
-        expect.objectContaining({ codexConfig: ["model=\"o3\"", "sandbox_permissions=[\"disk-full-read-access\"]"] }),
+        expect.objectContaining({ codexConfig: ["model=\"gpt-5-codex\"", "sandbox_permissions=[\"disk-full-read-access\"]"] }),
       );
     });
   });
@@ -130,7 +130,7 @@ describe("EnvManager existing env edit", () => {
         slug: "companion",
         variables: {},
         claudeSettings: "{\"trace\":true}",
-        codexConfig: ["model=\"o3\""],
+        codexConfig: ["model=\"gpt-5-codex\""],
         createdAt: Date.now(),
         updatedAt: Date.now(),
       },
@@ -140,8 +140,8 @@ describe("EnvManager existing env edit", () => {
     await screen.findByText("Companion");
     fireEvent.click(screen.getByText("Edit"));
 
-    const settingsArea = screen.getByPlaceholderText("{\"featureFlag\": true}") as HTMLTextAreaElement;
-    const codexArea = screen.getByPlaceholderText(/shell_environment_policy\.inherit=all/) as HTMLTextAreaElement;
+    const settingsArea = screen.getByPlaceholderText(/"deny": \["WebSearch"\]/) as HTMLTextAreaElement;
+    const codexArea = screen.getByPlaceholderText(/shell_environment_policy\.inherit="all"/) as HTMLTextAreaElement;
     fireEvent.change(settingsArea, { target: { value: "" } });
     fireEvent.change(codexArea, { target: { value: "" } });
     fireEvent.click(screen.getByText("Save"));
@@ -160,7 +160,7 @@ describe("EnvManager existing env edit", () => {
     await screen.findByText("Companion");
     fireEvent.click(screen.getByText("Edit"));
 
-    const settingsArea = screen.getByPlaceholderText("{\"featureFlag\": true}") as HTMLTextAreaElement;
+    const settingsArea = screen.getByPlaceholderText(/"deny": \["WebSearch"\]/) as HTMLTextAreaElement;
     fireEvent.change(settingsArea, { target: { value: "{\"broken\":" } });
     fireEvent.click(screen.getByText("Save"));
 
@@ -173,11 +173,37 @@ describe("EnvManager existing env edit", () => {
     await screen.findByText("Companion");
     fireEvent.click(screen.getByText("Edit"));
 
-    const codexArea = screen.getByPlaceholderText(/shell_environment_policy\.inherit=all/) as HTMLTextAreaElement;
+    const codexArea = screen.getByPlaceholderText(/shell_environment_policy\.inherit="all"/) as HTMLTextAreaElement;
     fireEvent.change(codexArea, { target: { value: "just-key" } });
     fireEvent.click(screen.getByText("Save"));
 
     expect(await screen.findByText('Codex config entry "just-key" must use key=value format.')).toBeTruthy();
+    expect(mockUpdateEnv).not.toHaveBeenCalled();
+  });
+
+  it("blocks save when Codex config key path is invalid", async () => {
+    render(<EnvManager embedded />);
+    await screen.findByText("Companion");
+    fireEvent.click(screen.getByText("Edit"));
+
+    const codexArea = screen.getByPlaceholderText(/shell_environment_policy\.inherit="all"/) as HTMLTextAreaElement;
+    fireEvent.change(codexArea, { target: { value: ".invalid=1" } });
+    fireEvent.click(screen.getByText("Save"));
+
+    expect(await screen.findByText(/must use a dotted key path before '='/)).toBeTruthy();
+    expect(mockUpdateEnv).not.toHaveBeenCalled();
+  });
+
+  it("blocks save when Codex config value is not valid TOML", async () => {
+    render(<EnvManager embedded />);
+    await screen.findByText("Companion");
+    fireEvent.click(screen.getByText("Edit"));
+
+    const codexArea = screen.getByPlaceholderText(/shell_environment_policy\.inherit="all"/) as HTMLTextAreaElement;
+    fireEvent.change(codexArea, { target: { value: "model=\"gpt-5-codex\"\nnotes=\"unterminated" } });
+    fireEvent.click(screen.getByText("Save"));
+
+    expect(await screen.findByText(/must have a valid TOML value after '='/)).toBeTruthy();
     expect(mockUpdateEnv).not.toHaveBeenCalled();
   });
 });
@@ -190,7 +216,7 @@ describe("EnvManager create flow", () => {
     fireEvent.change(screen.getByPlaceholderText(/Environment name/i), { target: { value: "New Env" } });
     fireEvent.click(screen.getByRole("button", { name: "settings" }));
 
-    const settingsArea = screen.getByPlaceholderText("{\"featureFlag\": true}") as HTMLTextAreaElement;
+    const settingsArea = screen.getByPlaceholderText(/"deny": \["WebSearch"\]/) as HTMLTextAreaElement;
     fireEvent.change(settingsArea, { target: { value: '{ "trace": true }' } });
     fireEvent.click(screen.getByRole("button", { name: "Create" }));
 
@@ -210,15 +236,15 @@ describe("EnvManager create flow", () => {
     fireEvent.change(screen.getByPlaceholderText(/Environment name/i), { target: { value: "Codex Env" } });
     fireEvent.click(screen.getByRole("button", { name: "settings" }));
 
-    const codexArea = screen.getByPlaceholderText(/shell_environment_policy\.inherit=all/) as HTMLTextAreaElement;
-    fireEvent.change(codexArea, { target: { value: "model=\"o3\"\nshell_environment_policy.inherit=all" } });
+    const codexArea = screen.getByPlaceholderText(/shell_environment_policy\.inherit="all"/) as HTMLTextAreaElement;
+    fireEvent.change(codexArea, { target: { value: "model=\"gpt-5-codex\"\nshell_environment_policy.inherit=\"all\"" } });
     fireEvent.click(screen.getByRole("button", { name: "Create" }));
 
     await waitFor(() => {
       expect(mockCreateEnv).toHaveBeenCalledWith(
         "Codex Env",
         {},
-        expect.objectContaining({ codexConfig: ["model=\"o3\"", "shell_environment_policy.inherit=all"] }),
+        expect.objectContaining({ codexConfig: ["model=\"gpt-5-codex\"", "shell_environment_policy.inherit=\"all\""] }),
       );
     });
   });
