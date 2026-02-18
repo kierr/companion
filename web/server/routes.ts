@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { streamSSE, type SSEStreamingApi } from "hono/streaming";
+import { parse as parseToml } from "smol-toml";
 import { execSync } from "node:child_process";
 import { resolveBinary } from "./path-resolver.js";
 import { readdir, readFile, writeFile, stat } from "node:fs/promises";
@@ -97,6 +98,8 @@ function normalizeClaudeSettings(input: unknown): { ok: true; value?: string } |
   }
 }
 
+const CODEX_CONFIG_KEY_PATH_RE = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/;
+
 function normalizeCodexConfig(input: unknown): { ok: true; value?: string[] } | { ok: false; error: string } {
   if (input === undefined || input === null) return { ok: true, value: undefined };
 
@@ -125,6 +128,15 @@ function normalizeCodexConfig(input: unknown): { ok: true; value?: string[] } | 
     const key = entry.slice(0, eqIdx).trim();
     if (!key) {
       return { ok: false, error: `codexConfig entry "${entry}" has an empty key` };
+    }
+    if (!CODEX_CONFIG_KEY_PATH_RE.test(key)) {
+      return { ok: false, error: `codexConfig entry "${entry}" must use a dotted key path before '=' (for example foo.bar.baz=value)` };
+    }
+    const value = entry.slice(eqIdx + 1).trim();
+    try {
+      parseToml(`value = ${value}`);
+    } catch {
+      return { ok: false, error: `codexConfig entry "${entry}" must have a valid TOML value after '='` };
     }
   }
 
@@ -220,7 +232,16 @@ export function createRoutes(
       // Resolve Docker image from environment or explicit container config
       const companionEnv = body.envSlug ? envManager.getEnv(body.envSlug) : null;
       const claudeSettings = backend === "claude" ? companionEnv?.claudeSettings : undefined;
-      const codexConfigOverrides = backend === "codex" ? companionEnv?.codexConfig : undefined;
+      let codexConfigOverrides: string[] | undefined;
+      if (backend === "codex") {
+        const normalizedEnvCodexConfig = normalizeCodexConfig(companionEnv?.codexConfig);
+        if (!normalizedEnvCodexConfig.ok) {
+          return c.json({
+            error: `Selected environment has invalid codexConfig: ${normalizedEnvCodexConfig.error}`,
+          }, 400);
+        }
+        codexConfigOverrides = normalizedEnvCodexConfig.value;
+      }
       let effectiveImage = companionEnv
         ? (body.envSlug ? envManager.getEffectiveImage(body.envSlug) : null)
         : (body.container?.image || null);
@@ -442,7 +463,21 @@ export function createRoutes(
         let envVars: Record<string, string> | undefined = body.env;
         const companionEnv = body.envSlug ? envManager.getEnv(body.envSlug) : null;
         const claudeSettings = backend === "claude" ? companionEnv?.claudeSettings : undefined;
-        const codexConfigOverrides = backend === "codex" ? companionEnv?.codexConfig : undefined;
+        let codexConfigOverrides: string[] | undefined;
+        if (backend === "codex") {
+          const normalizedEnvCodexConfig = normalizeCodexConfig(companionEnv?.codexConfig);
+          if (!normalizedEnvCodexConfig.ok) {
+            await stream.writeSSE({
+              event: "error",
+              data: JSON.stringify({
+                error: `Selected environment has invalid codexConfig: ${normalizedEnvCodexConfig.error}`,
+                step: "resolving_env",
+              }),
+            });
+            return;
+          }
+          codexConfigOverrides = normalizedEnvCodexConfig.value;
+        }
         if (body.envSlug && companionEnv) {
           envVars = { ...companionEnv.variables, ...body.env };
         }

@@ -917,6 +917,33 @@ describe("POST /api/envs", () => {
     expect(envManager.createEnv).not.toHaveBeenCalled();
   });
 
+  it("returns 400 for invalid codexConfig key path", async () => {
+    // Dotted key path must be valid before "=" for Codex -c/--config semantics.
+    const res = await app.request("/api/envs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Broken", codexConfig: ".bad=1" }),
+    });
+
+    expect(res.status).toBe(400);
+    const json = await res.json();
+    expect(json.error).toContain("must use a dotted key path");
+    expect(envManager.createEnv).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 for invalid TOML codexConfig value", async () => {
+    const res = await app.request("/api/envs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Codex Literal", codexConfig: "notes=\"unterminated" }),
+    });
+
+    expect(res.status).toBe(400);
+    const json = await res.json();
+    expect(json.error).toContain("must have a valid TOML value after '='");
+    expect(envManager.createEnv).not.toHaveBeenCalled();
+  });
+
   it("returns 400 when createEnv throws", async () => {
     vi.mocked(envManager.createEnv).mockImplementation(() => {
       throw new Error("Environment name is required");
@@ -990,6 +1017,19 @@ describe("PUT /api/envs/:slug", () => {
     expect(res.status).toBe(400);
     const json = await res.json();
     expect(json).toEqual({ error: "codexConfig must be a newline-delimited string or string array" });
+    expect(envManager.updateEnv).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 for invalid TOML codexConfig value on update", async () => {
+    const res = await app.request("/api/envs/production", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ codexConfig: "shell_environment_policy.inherit=all" }),
+    });
+
+    expect(res.status).toBe(400);
+    const json = await res.json();
+    expect(json.error).toContain("must have a valid TOML value after '='");
     expect(envManager.updateEnv).not.toHaveBeenCalled();
   });
 });
@@ -1716,7 +1756,7 @@ describe("POST /api/sessions/create with backend", () => {
       name: "Codex Env",
       slug: "codex-env",
       variables: {},
-      codexConfig: ["model=\"o3\"", "shell_environment_policy.inherit=all"],
+      codexConfig: ["model=\"o3\"", "shell_environment_policy.inherit=\"all\""],
       createdAt: 1,
       updatedAt: 1,
     });
@@ -1731,9 +1771,31 @@ describe("POST /api/sessions/create with backend", () => {
     expect(launcher.launch).toHaveBeenCalledWith(
       expect.objectContaining({
         backendType: "codex",
-        codexConfigOverrides: ["model=\"o3\"", "shell_environment_policy.inherit=all"],
+        codexConfigOverrides: ["model=\"o3\"", "shell_environment_policy.inherit=\"all\""],
       }),
     );
+  });
+
+  it("returns 400 when env codexConfig contains invalid TOML value", async () => {
+    vi.mocked(envManager.getEnv).mockReturnValue({
+      name: "Codex Env",
+      slug: "codex-env",
+      variables: {},
+      codexConfig: ["shell_environment_policy.inherit=all"],
+      createdAt: 1,
+      updatedAt: 1,
+    });
+
+    const res = await app.request("/api/sessions/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cwd: "/test", backend: "codex", envSlug: "codex-env" }),
+    });
+
+    expect(res.status).toBe(400);
+    const json = await res.json();
+    expect(json.error).toContain("Selected environment has invalid codexConfig");
+    expect(launcher.launch).not.toHaveBeenCalled();
   });
 });
 
@@ -1945,6 +2007,30 @@ describe("POST /api/sessions/create-stream", () => {
     expect(launcher.launch).toHaveBeenCalledWith(
       expect.objectContaining({ backendType: "codex", codexConfigOverrides: ["model=\"o3\""] }),
     );
+  });
+
+  it("emits error when env codexConfig contains invalid TOML value", async () => {
+    vi.mocked(envManager.getEnv).mockReturnValue({
+      name: "Codex Stream",
+      slug: "codex-stream",
+      variables: {},
+      codexConfig: ["shell_environment_policy.inherit=all"],
+      createdAt: 1,
+      updatedAt: 1,
+    });
+
+    const res = await app.request("/api/sessions/create-stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cwd: "/test", backend: "codex", envSlug: "codex-stream" }),
+    });
+
+    expect(res.status).toBe(200);
+    const events = await parseSSE(res);
+    const errorEvent = events.find((e) => e.event === "error");
+    expect(errorEvent).toBeDefined();
+    expect(JSON.parse(errorEvent!.data).error).toContain("Selected environment has invalid codexConfig");
+    expect(launcher.launch).not.toHaveBeenCalled();
   });
 
   it("emits git progress events when branch is specified", async () => {
