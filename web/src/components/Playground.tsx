@@ -1225,6 +1225,9 @@ export function Playground() {
             <Card label="Open editor button (from TopBar)">
               <PlaygroundClaudeMdButton />
             </Card>
+            <Card label="Terminal quick tabs (from TopBar)">
+              <PlaygroundTerminalTabsMock />
+            </Card>
           </div>
         </Section>
       </div>
@@ -1253,6 +1256,68 @@ function Card({ label, children }: { label: string; children: React.ReactNode })
         <span className="text-[10px] text-cc-muted font-mono-code uppercase tracking-wider">{label}</span>
       </div>
       <div className="p-4">{children}</div>
+    </div>
+  );
+}
+
+function PlaygroundTerminalTabsMock() {
+  const tabs = [
+    { id: "host", label: "Terminal", cwd: "/Users/demo/project" },
+    { id: "docker", label: "Docker", cwd: "/workspace" },
+  ];
+  const [active, setActive] = useState("host");
+  const [placement, setPlacement] = useState<"top" | "right" | "bottom" | "left">("bottom");
+
+  return (
+    <div className="rounded-xl border border-cc-border bg-cc-card overflow-hidden">
+      <div className="flex items-center gap-1.5 px-2 py-1.5 border-b border-cc-border bg-cc-sidebar">
+        <div className="flex items-center gap-0.5 bg-cc-hover rounded-md p-0.5 mr-1">
+          {(["top", "right", "bottom", "left"] as const).map((p) => (
+            <button
+              key={p}
+              onClick={() => setPlacement(p)}
+              className={`px-2 py-1 rounded text-[10px] font-medium cursor-pointer ${
+                placement === p ? "bg-cc-card text-cc-fg" : "text-cc-muted"
+              }`}
+            >
+              {p[0]?.toUpperCase()}{p.slice(1)}
+            </button>
+          ))}
+        </div>
+        {tabs.map((tab) => (
+          <button
+            key={tab.id}
+            onClick={() => setActive(tab.id)}
+            className={`px-2 py-1 rounded-md text-[11px] font-medium border cursor-pointer ${
+              active === tab.id
+                ? "text-cc-fg bg-cc-card border-cc-border"
+                : "text-cc-muted border-transparent hover:bg-cc-hover"
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
+        <span className="text-[11px] font-mono-code text-cc-muted truncate ml-1">
+          {tabs.find((tab) => tab.id === active)?.cwd}
+        </span>
+      </div>
+      <div className="h-32 p-3 bg-cc-bg">
+        <div className={`h-full min-h-0 rounded-lg border border-cc-border bg-cc-card flex ${placement === "left" || placement === "right" ? "flex-row" : "flex-col"}`}>
+          {(placement === "top" || placement === "left") && (
+            <div className={`${placement === "left" ? "w-2/5 border-r" : "h-2/5 border-b"} border-cc-border bg-cc-sidebar/40 flex items-center justify-center text-[10px] text-cc-muted font-mono-code`}>
+              Terminal docked
+            </div>
+          )}
+          <div className="flex-1 min-h-0 flex items-center justify-center text-xs text-cc-muted">
+            Session content
+          </div>
+          {(placement === "right" || placement === "bottom") && (
+            <div className={`${placement === "right" ? "w-2/5 border-l" : "h-2/5 border-t"} border-cc-border bg-cc-sidebar/40 flex items-center justify-center text-[10px] text-cc-muted font-mono-code`}>
+              Terminal docked
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

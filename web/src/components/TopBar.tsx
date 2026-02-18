@@ -1,4 +1,4 @@
-import { useState, useMemo, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { useStore } from "../store.js";
 import { api } from "../api.js";
 import { ClaudeMdEditor } from "./ClaudeMdEditor.js";
@@ -27,6 +27,11 @@ export function TopBar() {
   const activeTab = useStore((s) => s.activeTab);
   const setActiveTab = useStore((s) => s.setActiveTab);
   const [claudeMdOpen, setClaudeMdOpen] = useState(false);
+  const quickTerminalOpen = useStore((s) => s.quickTerminalOpen);
+  const quickTerminalTabs = useStore((s) => s.quickTerminalTabs);
+  const openQuickTerminal = useStore((s) => s.openQuickTerminal);
+  const setQuickTerminalOpen = useStore((s) => s.setQuickTerminalOpen);
+  const resetQuickTerminal = useStore((s) => s.resetQuickTerminal);
   const changedFilesCount = useStore((s) => {
     if (!currentSessionId) return 0;
     const cwd =
@@ -47,6 +52,44 @@ export function TopBar() {
       null
     );
   });
+  const sdkSession = useStore((s) => {
+    if (!currentSessionId) return null;
+    return s.sdkSessions.find((sdk) => sdk.sessionId === currentSessionId) || null;
+  });
+  const bridgeSession = useStore((s) => {
+    if (!currentSessionId) return null;
+    return s.sessions.get(currentSessionId) || null;
+  });
+  const defaultTerminalOpts = useMemo(() => {
+    if (sdkSession?.containerId) {
+      return { target: "docker" as const, cwd: "/workspace", containerId: sdkSession.containerId };
+    }
+    return { target: "host" as const, cwd: cwd || "" };
+  }, [cwd, sdkSession?.containerId]);
+  const terminalButtonTitle = sdkSession?.containerId || bridgeSession?.is_containerized
+    ? "Open terminal in session container (Ctrl/Cmd+J)"
+    : "Quick terminal (Ctrl/Cmd+J)";
+
+  useEffect(() => {
+    if (!currentSessionId) {
+      resetQuickTerminal();
+    }
+  }, [currentSessionId, resetQuickTerminal]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "j") return;
+      if (!isSessionView || !cwd) return;
+      event.preventDefault();
+      if (quickTerminalOpen && quickTerminalTabs.length > 0) {
+        setQuickTerminalOpen(false);
+      } else {
+        openQuickTerminal({ ...defaultTerminalOpts, reuseIfExists: true });
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isSessionView, cwd, openQuickTerminal, defaultTerminalOpts, quickTerminalOpen, quickTerminalTabs.length, setQuickTerminalOpen]);
 
   const isConnected = currentSessionId ? (cliConnected.get(currentSessionId) ?? false) : false;
   const status = currentSessionId ? (sessionStatus.get(currentSessionId) ?? null) : null;
@@ -60,7 +103,7 @@ export function TopBar() {
     : null;
 
   return (
-    <header className="shrink-0 flex items-center justify-between px-2 sm:px-4 py-2 sm:py-2.5 bg-cc-card border-b border-cc-border">
+    <header className="relative shrink-0 flex items-center justify-between px-2 sm:px-4 py-2 sm:py-2.5 bg-cc-card border-b border-cc-border">
       <div className="flex items-center gap-3">
         {/* Sidebar toggle */}
         <button
@@ -89,6 +132,28 @@ export function TopBar() {
                 )}
                 {sessionName}
               </span>
+            )}
+            {cwd && isSessionView && (
+              <button
+                onClick={() => {
+                  if (quickTerminalOpen && quickTerminalTabs.length > 0) {
+                    setQuickTerminalOpen(false);
+                  } else {
+                    openQuickTerminal({ ...defaultTerminalOpts, reuseIfExists: true });
+                  }
+                }}
+                className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-medium border transition-colors cursor-pointer ${
+                  quickTerminalOpen
+                    ? "bg-cc-active text-cc-primary border-cc-primary/30"
+                    : "bg-cc-hover text-cc-muted border-cc-border hover:text-cc-fg"
+                }`}
+                title={terminalButtonTitle}
+              >
+                <svg viewBox="0 0 16 16" fill="currentColor" className="w-3 h-3">
+                  <path d="M2 3.5A1.5 1.5 0 013.5 2h9A1.5 1.5 0 0114 3.5v9a1.5 1.5 0 01-1.5 1.5h-9A1.5 1.5 0 012 12.5v-9zm3.2 2.2a.7.7 0 00-.99.99L5.82 8.3 4.21 9.91a.7.7 0 00.99.99l2.1-2.1a.7.7 0 000-.99L5.2 5.7zm3.6 4.1h2.4a.7.7 0 000-1.4H8.8a.7.7 0 000 1.4z" />
+                </svg>
+                Terminal
+              </button>
             )}
             {!isConnected && (
               <button
