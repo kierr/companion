@@ -231,6 +231,35 @@ describe("createEnv", () => {
     expect(JSON.parse(opts.body)).toEqual({ name: "Prod", variables: { KEY: "val" } });
     expect(result).toEqual(envData);
   });
+
+  it("includes claudeSettings when provided", async () => {
+    // Ensure Claude settings are forwarded through the API client body.
+    const envData = { name: "Prod", slug: "prod", variables: {}, claudeSettings: "{\"x\":1}", createdAt: 1, updatedAt: 1 };
+    mockFetch.mockResolvedValueOnce(mockResponse(envData));
+
+    await api.createEnv("Prod", {}, { claudeSettings: "{\"x\":1}" });
+
+    const [, opts] = mockFetch.mock.calls[0];
+    expect(JSON.parse(opts.body)).toEqual({
+      name: "Prod",
+      variables: {},
+      claudeSettings: "{\"x\":1}",
+    });
+  });
+
+  it("includes codexConfig when provided", async () => {
+    const envData = { name: "Codex", slug: "codex", variables: {}, codexConfig: ["model=\"o3\""], createdAt: 1, updatedAt: 1 };
+    mockFetch.mockResolvedValueOnce(mockResponse(envData));
+
+    await api.createEnv("Codex", {}, { codexConfig: ["model=\"o3\""] });
+
+    const [, opts] = mockFetch.mock.calls[0];
+    expect(JSON.parse(opts.body)).toEqual({
+      name: "Codex",
+      variables: {},
+      codexConfig: ["model=\"o3\""],
+    });
+  });
 });
 
 // ===========================================================================
@@ -247,6 +276,33 @@ describe("updateEnv", () => {
     expect(url).toBe(`/api/envs/${encodeURIComponent("my-env")}`);
     expect(opts.method).toBe("PUT");
     expect(JSON.parse(opts.body)).toEqual({ name: "Renamed" });
+  });
+
+  it("sends claudeSettings in update payload", async () => {
+    mockFetch.mockResolvedValueOnce(mockResponse({ name: "Renamed", slug: "renamed", variables: {}, createdAt: 1, updatedAt: 2 }));
+
+    await api.updateEnv("my-env", { claudeSettings: "{\"safe\":true}" });
+
+    const [, opts] = mockFetch.mock.calls[0];
+    expect(JSON.parse(opts.body)).toEqual({ claudeSettings: "{\"safe\":true}" });
+  });
+
+  it("sends codexConfig in update payload", async () => {
+    mockFetch.mockResolvedValueOnce(mockResponse({ name: "Renamed", slug: "renamed", variables: {}, createdAt: 1, updatedAt: 2 }));
+
+    await api.updateEnv("my-env", { codexConfig: ["model=\"o3\""] });
+
+    const [, opts] = mockFetch.mock.calls[0];
+    expect(JSON.parse(opts.body)).toEqual({ codexConfig: ["model=\"o3\""] });
+  });
+
+  it("keeps null values in update payload so fields can be cleared", async () => {
+    mockFetch.mockResolvedValueOnce(mockResponse({ name: "Renamed", slug: "renamed", variables: {}, createdAt: 1, updatedAt: 2 }));
+
+    await api.updateEnv("my-env", { claudeSettings: null, codexConfig: null });
+
+    const [, opts] = mockFetch.mock.calls[0];
+    expect(JSON.parse(opts.body)).toEqual({ claudeSettings: null, codexConfig: null });
   });
 });
 

@@ -15,6 +15,10 @@ export interface CompanionEnv {
   name: string;
   slug: string;
   variables: Record<string, string>;
+  /** Claude-specific inline settings JSON passed as --settings */
+  claudeSettings?: string;
+  /** Codex config overrides passed as repeated -c key=value flags */
+  codexConfig?: string[];
 
   // Docker configuration
   /** Raw Dockerfile content (stored inline). When present, used to build a custom image. */
@@ -44,6 +48,8 @@ export interface CompanionEnv {
 export interface EnvUpdateFields {
   name?: string;
   variables?: Record<string, string>;
+  claudeSettings?: string;
+  codexConfig?: string[];
   dockerfile?: string;
   imageTag?: string;
   baseImage?: string;
@@ -122,6 +128,8 @@ export function createEnv(
   name: string,
   variables: Record<string, string> = {},
   docker?: {
+    claudeSettings?: string;
+    codexConfig?: string[];
     dockerfile?: string;
     baseImage?: string;
     ports?: number[];
@@ -149,6 +157,8 @@ export function createEnv(
 
   // Apply Docker config if provided
   if (docker) {
+    if (docker.claudeSettings !== undefined) env.claudeSettings = docker.claudeSettings;
+    if (docker.codexConfig !== undefined) env.codexConfig = docker.codexConfig;
     if (docker.dockerfile !== undefined) env.dockerfile = docker.dockerfile;
     if (docker.baseImage !== undefined) env.baseImage = docker.baseImage;
     if (docker.ports !== undefined) env.ports = docker.ports;
@@ -184,6 +194,13 @@ export function updateEnv(
     variables: updates.variables ?? existing.variables,
     updatedAt: Date.now(),
   };
+
+  if (Object.prototype.hasOwnProperty.call(updates, "claudeSettings")) {
+    env.claudeSettings = updates.claudeSettings;
+  }
+  if (Object.prototype.hasOwnProperty.call(updates, "codexConfig")) {
+    env.codexConfig = updates.codexConfig;
+  }
 
   // Apply Docker field updates (only override if explicitly provided)
   if (updates.dockerfile !== undefined) env.dockerfile = updates.dockerfile;

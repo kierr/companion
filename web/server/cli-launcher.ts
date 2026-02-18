@@ -19,10 +19,41 @@ import {
   resolveCompanionCodexSessionHome,
 } from "./codex-home.js";
 
+function redactInlineShellFlagValues(command: string): string {
+  const tokens = command.match(/'(?:[^']|'\\'')*'|"(?:[^"\\]|\\.)*"|\S+/g);
+  if (!tokens) return command;
+
+  for (let i = 0; i < tokens.length - 1; i++) {
+    const token = tokens[i];
+    const unquoted = (
+      (token.startsWith("'") && token.endsWith("'"))
+      || (token.startsWith("\"") && token.endsWith("\""))
+    )
+      ? token.slice(1, -1)
+      : token;
+
+    if (unquoted === "--settings" || unquoted === "-c") {
+      tokens[i + 1] = "***";
+      i++;
+    }
+  }
+
+  return tokens.join(" ");
+}
+
 function sanitizeSpawnArgsForLog(args: string[]): string {
   const secretKeyPattern = /(token|key|secret|password)/i;
   const out = [...args];
   for (let i = 0; i < out.length; i++) {
+    if (out[i] === "--settings" && i + 1 < out.length) {
+      out[i + 1] = "***";
+      continue;
+    }
+    if (out[i] === "-c" && i + 1 < out.length) {
+      out[i + 1] = "***";
+      continue;
+    }
+
     if (out[i] === "-e" && i + 1 < out.length) {
       const envPair = out[i + 1];
       const eqIdx = envPair.indexOf("=");
@@ -33,6 +64,10 @@ function sanitizeSpawnArgsForLog(args: string[]): string {
         }
       }
     }
+
+    // Containerized launches pass all Claude args inside `bash -lc "<cmd>"`.
+    // Redact any inlined --settings/-c value in that command string too.
+    out[i] = redactInlineShellFlagValues(out[i]);
   }
   return out.join(" ");
 }
@@ -67,6 +102,8 @@ export interface SdkSessionInfo {
   codexInternetAccess?: boolean;
   /** Sandbox mode selected for Codex sessions */
   codexSandbox?: "workspace-write" | "danger-full-access";
+  /** Codex `-c key=value` overrides passed at launch */
+  codexConfigOverrides?: string[];
   /** If this session was spawned by a cron job */
   cronJobId?: string;
   /** Human-readable name of the cron job that spawned this session */
@@ -79,6 +116,8 @@ export interface SdkSessionInfo {
   containerName?: string;
   /** Docker image used for the container */
   containerImage?: string;
+  /** Claude inline JSON settings passed via --settings */
+  claudeSettings?: string;
 }
 
 export interface LaunchOptions {
@@ -94,8 +133,12 @@ export interface LaunchOptions {
   codexSandbox?: "workspace-write" | "danger-full-access";
   /** Whether Codex internet/web search should be enabled for this session. */
   codexInternetAccess?: boolean;
+  /** Codex `-c key=value` overrides. */
+  codexConfigOverrides?: string[];
   /** Optional override for CODEX_HOME used by Codex sessions. */
   codexHome?: string;
+  /** Claude inline JSON settings passed as --settings. */
+  claudeSettings?: string;
   /** Docker container ID — when set, CLI runs inside container via docker exec */
   containerId?: string;
   /** Docker container name */
@@ -208,6 +251,9 @@ export class CliLauncher {
     if (backendType === "codex") {
       info.codexInternetAccess = options.codexInternetAccess === true;
       info.codexSandbox = options.codexSandbox;
+      info.codexConfigOverrides = options.codexConfigOverrides;
+    } else {
+      info.claudeSettings = options.claudeSettings;
     }
 
     // Store container metadata if provided
@@ -311,6 +357,7 @@ export class CliLauncher {
         cwd: info.cwd,
         codexSandbox: info.codexSandbox,
         codexInternetAccess: info.codexInternetAccess,
+        codexConfigOverrides: info.codexConfigOverrides,
         containerId: info.containerId,
         containerName: info.containerName,
         containerImage: info.containerImage,
@@ -325,6 +372,7 @@ export class CliLauncher {
         containerId: info.containerId,
         containerName: info.containerName,
         containerImage: info.containerImage,
+        claudeSettings: info.claudeSettings,
         env: runtimeEnv,
       });
     }
@@ -403,6 +451,9 @@ export class CliLauncher {
       for (const tool of options.allowedTools) {
         args.push("--allowedTools", tool);
       }
+    }
+    if (options.claudeSettings) {
+      args.push("--settings", options.claudeSettings);
     }
 
     // Always pass -p "" for headless mode. When relaunching, also pass --resume
@@ -558,6 +609,11 @@ export class CliLauncher {
     const args: string[] = ["app-server"];
     const internetEnabled = options.codexInternetAccess === true;
     args.push("-c", `tools.webSearch=${internetEnabled ? "true" : "false"}`);
+    if (options.codexConfigOverrides) {
+      for (const override of options.codexConfigOverrides) {
+        args.push("-c", override);
+      }
+    }
     const codexHome = resolveCompanionCodexSessionHome(
       sessionId,
       options.codexHome,

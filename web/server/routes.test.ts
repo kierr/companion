@@ -878,12 +878,43 @@ describe("POST /api/envs", () => {
       "Staging",
       { HOST: "staging.example.com" },
       {
+        claudeSettings: undefined,
+        codexConfig: undefined,
         dockerfile: undefined,
         baseImage: undefined,
         ports: undefined,
         volumes: undefined,
+        initScript: undefined,
       },
     );
+  });
+
+  it("returns 400 for invalid claudeSettings JSON", async () => {
+    // Guardrail: backend must reject malformed JSON regardless of UI behavior.
+    const res = await app.request("/api/envs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Broken", claudeSettings: "{\"x\":" }),
+    });
+
+    expect(res.status).toBe(400);
+    const json = await res.json();
+    expect(json).toEqual({ error: "claudeSettings must be valid JSON" });
+    expect(envManager.createEnv).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 for invalid codexConfig entry format", async () => {
+    // codexConfig must be key=value entries so launcher can pass -c safely.
+    const res = await app.request("/api/envs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Broken", codexConfig: "just-a-key" }),
+    });
+
+    expect(res.status).toBe(400);
+    const json = await res.json();
+    expect(json.error).toContain("must use key=value format");
+    expect(envManager.createEnv).not.toHaveBeenCalled();
   });
 
   it("returns 400 when createEnv throws", async () => {
@@ -926,7 +957,40 @@ describe("PUT /api/envs/:slug", () => {
     expect(envManager.updateEnv).toHaveBeenCalledWith("production", {
       name: "Production v2",
       variables: { KEY: "new-value" },
+      dockerfile: undefined,
+      imageTag: undefined,
+      baseImage: undefined,
+      ports: undefined,
+      volumes: undefined,
+      initScript: undefined,
     });
+  });
+
+  it("returns 400 for non-object claudeSettings JSON", async () => {
+    // Edge case: scalars/arrays are valid JSON but invalid for --settings.
+    const res = await app.request("/api/envs/production", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ claudeSettings: "[]" }),
+    });
+
+    expect(res.status).toBe(400);
+    const json = await res.json();
+    expect(json).toEqual({ error: "claudeSettings must be a JSON object (not array or primitive)" });
+    expect(envManager.updateEnv).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 for invalid codexConfig type", async () => {
+    const res = await app.request("/api/envs/production", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ codexConfig: 123 }),
+    });
+
+    expect(res.status).toBe(400);
+    const json = await res.json();
+    expect(json).toEqual({ error: "codexConfig must be a newline-delimited string or string array" });
+    expect(envManager.updateEnv).not.toHaveBeenCalled();
   });
 });
 
@@ -1601,6 +1665,76 @@ describe("POST /api/sessions/create with backend", () => {
       expect.objectContaining({ backendType: "claude" }),
     );
   });
+
+  it("passes env claudeSettings to launcher for claude backend", async () => {
+    // Claude sessions should receive per-env --settings payloads.
+    vi.mocked(envManager.getEnv).mockReturnValue({
+      name: "Claude Env",
+      slug: "claude-env",
+      variables: {},
+      claudeSettings: "{\"trace\":true}",
+      createdAt: 1,
+      updatedAt: 1,
+    });
+
+    const res = await app.request("/api/sessions/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cwd: "/test", backend: "claude", envSlug: "claude-env" }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(launcher.launch).toHaveBeenCalledWith(
+      expect.objectContaining({ backendType: "claude", claudeSettings: "{\"trace\":true}" }),
+    );
+  });
+
+  it("does not pass claudeSettings to codex backend", async () => {
+    vi.mocked(envManager.getEnv).mockReturnValue({
+      name: "Mixed Env",
+      slug: "mixed-env",
+      variables: {},
+      claudeSettings: "{\"trace\":true}",
+      createdAt: 1,
+      updatedAt: 1,
+    });
+
+    const res = await app.request("/api/sessions/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cwd: "/test", backend: "codex", envSlug: "mixed-env" }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(launcher.launch).toHaveBeenCalledWith(
+      expect.objectContaining({ backendType: "codex", claudeSettings: undefined }),
+    );
+  });
+
+  it("passes env codexConfig to launcher for codex backend", async () => {
+    vi.mocked(envManager.getEnv).mockReturnValue({
+      name: "Codex Env",
+      slug: "codex-env",
+      variables: {},
+      codexConfig: ["model=\"o3\"", "shell_environment_policy.inherit=all"],
+      createdAt: 1,
+      updatedAt: 1,
+    });
+
+    const res = await app.request("/api/sessions/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cwd: "/test", backend: "codex", envSlug: "codex-env" }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(launcher.launch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        backendType: "codex",
+        codexConfigOverrides: ["model=\"o3\"", "shell_environment_policy.inherit=all"],
+      }),
+    );
+  });
 });
 
 // ─── Per-session usage limits ─────────────────────────────────────────────────
@@ -1742,6 +1876,75 @@ describe("POST /api/sessions/create-stream", () => {
     const doneData = JSON.parse(doneEvent!.data);
     expect(doneData.sessionId).toBe("session-1");
     expect(doneData.cwd).toBe("/test");
+  });
+
+  it("passes env claudeSettings to launcher for claude backend", async () => {
+    vi.mocked(envManager.getEnv).mockReturnValue({
+      name: "Claude Stream",
+      slug: "claude-stream",
+      variables: {},
+      claudeSettings: "{\"safe\":true}",
+      createdAt: 1,
+      updatedAt: 1,
+    });
+
+    const res = await app.request("/api/sessions/create-stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cwd: "/test", backend: "claude", envSlug: "claude-stream" }),
+    });
+
+    expect(res.status).toBe(200);
+    await parseSSE(res);
+    expect(launcher.launch).toHaveBeenCalledWith(
+      expect.objectContaining({ backendType: "claude", claudeSettings: "{\"safe\":true}" }),
+    );
+  });
+
+  it("omits claudeSettings for codex backend", async () => {
+    vi.mocked(envManager.getEnv).mockReturnValue({
+      name: "Codex Stream",
+      slug: "codex-stream",
+      variables: {},
+      claudeSettings: "{\"safe\":true}",
+      createdAt: 1,
+      updatedAt: 1,
+    });
+
+    const res = await app.request("/api/sessions/create-stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cwd: "/test", backend: "codex", envSlug: "codex-stream" }),
+    });
+
+    expect(res.status).toBe(200);
+    await parseSSE(res);
+    expect(launcher.launch).toHaveBeenCalledWith(
+      expect.objectContaining({ backendType: "codex", claudeSettings: undefined }),
+    );
+  });
+
+  it("passes env codexConfig to launcher for codex backend", async () => {
+    vi.mocked(envManager.getEnv).mockReturnValue({
+      name: "Codex Stream",
+      slug: "codex-stream",
+      variables: {},
+      codexConfig: ["model=\"o3\""],
+      createdAt: 1,
+      updatedAt: 1,
+    });
+
+    const res = await app.request("/api/sessions/create-stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cwd: "/test", backend: "codex", envSlug: "codex-stream" }),
+    });
+
+    expect(res.status).toBe(200);
+    await parseSSE(res);
+    expect(launcher.launch).toHaveBeenCalledWith(
+      expect.objectContaining({ backendType: "codex", codexConfigOverrides: ["model=\"o3\""] }),
+    );
   });
 
   it("emits git progress events when branch is specified", async () => {

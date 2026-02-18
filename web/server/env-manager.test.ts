@@ -174,6 +174,28 @@ describe("createEnv", () => {
     expect(env.name).toBe("Spaced Out");
     expect(env.slug).toBe("spaced-out");
   });
+
+  it("persists claudeSettings when provided", () => {
+    // Validate that optional Claude-only settings are stored in env JSON.
+    const env = envManager.createEnv("Claude Settings", {}, {
+      claudeSettings: "{\"flag\":true}",
+    });
+
+    expect(env.claudeSettings).toBe("{\"flag\":true}");
+    const parsed = JSON.parse(readFileSync(join(envsDir(), "claude-settings.json"), "utf-8"));
+    expect(parsed.claudeSettings).toBe("{\"flag\":true}");
+  });
+
+  it("persists codexConfig when provided", () => {
+    // Codex env-level -c overrides should round-trip to disk.
+    const env = envManager.createEnv("Codex Config", {}, {
+      codexConfig: ["model=\"o3\"", "shell_environment_policy.inherit=all"],
+    });
+
+    expect(env.codexConfig).toEqual(["model=\"o3\"", "shell_environment_policy.inherit=all"]);
+    const parsed = JSON.parse(readFileSync(join(envsDir(), "codex-config.json"), "utf-8"));
+    expect(parsed.codexConfig).toEqual(["model=\"o3\"", "shell_environment_policy.inherit=all"]);
+  });
 });
 
 // ===========================================================================
@@ -242,6 +264,45 @@ describe("updateEnv", () => {
 
     const updated = envManager.updateEnv("keep-vars", { name: "Kept Vars" });
     expect(updated!.variables).toEqual({ SECRET: "abc" });
+  });
+
+  it("updates and clears claudeSettings explicitly", () => {
+    // Edge case: update payload may intentionally clear the field with undefined.
+    envManager.createEnv("Settings Env", {}, { claudeSettings: "{\"a\":1}" });
+
+    const updated = envManager.updateEnv("settings-env", { claudeSettings: "{\"b\":2}" });
+    expect(updated!.claudeSettings).toBe("{\"b\":2}");
+
+    const cleared = envManager.updateEnv("settings-env", { claudeSettings: undefined });
+    expect(cleared!.claudeSettings).toBeUndefined();
+  });
+
+  it("updates and clears codexConfig explicitly", () => {
+    envManager.createEnv("Codex Env", {}, { codexConfig: ["model=\"o3\""] });
+
+    const updated = envManager.updateEnv("codex-env", { codexConfig: ["sandbox_permissions=[\"disk-full-read-access\"]"] });
+    expect(updated!.codexConfig).toEqual(["sandbox_permissions=[\"disk-full-read-access\"]"]);
+
+    const cleared = envManager.updateEnv("codex-env", { codexConfig: undefined });
+    expect(cleared!.codexConfig).toBeUndefined();
+  });
+});
+
+describe("legacy compatibility", () => {
+  it("loads env files that do not contain claudeSettings", () => {
+    // Backward compatibility: pre-feature env files should still parse cleanly.
+    mkdirSync(envsDir(), { recursive: true });
+    writeFileSync(join(envsDir(), "legacy.json"), JSON.stringify({
+      name: "Legacy",
+      slug: "legacy",
+      variables: {},
+      createdAt: 1,
+      updatedAt: 1,
+    }), "utf-8");
+
+    const env = envManager.getEnv("legacy");
+    expect(env).not.toBeNull();
+    expect(env!.claudeSettings).toBeUndefined();
   });
 });
 
