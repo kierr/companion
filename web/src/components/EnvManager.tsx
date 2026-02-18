@@ -27,6 +27,10 @@ WORKDIR /workspace
 CMD ["sleep", "infinity"]
 `;
 
+/**
+ * Normalizes and validates Claude settings JSON input from the UI.
+ * Returns the validated JSON string or an error message.
+ */
 function normalizeClaudeSettingsInput(input: string): { ok: true; value?: string } | { ok: false; error: string } {
   const trimmed = input.trim();
   if (!trimmed) return { ok: true, value: undefined };
@@ -42,6 +46,10 @@ function normalizeClaudeSettingsInput(input: string): { ok: true; value?: string
   }
 }
 
+/**
+ * Normalizes and validates Codex config input from the UI.
+ * Returns validated entries or an error message.
+ */
 function normalizeCodexConfigInput(input: string): { ok: true; value?: string[] } | { ok: false; error: string } {
   const entries = input
     .split(/\r?\n/)
@@ -69,7 +77,15 @@ function normalizeCodexConfigInput(input: string): { ok: true; value?: string[] 
     }
   }
 
-  return { ok: true, value: entries };
+  // Reconstruct clean entries with normalized whitespace around =
+  const cleanEntries = entries.map(entry => {
+    const eqIdx = entry.indexOf("=");
+    const key = entry.slice(0, eqIdx).trim();
+    const value = entry.slice(eqIdx + 1).trim();
+    return `${key}=${value}`;
+  });
+
+  return { ok: true, value: cleanEntries };
 }
 
 export function EnvManager({ onClose, embedded = false }: Props) {

@@ -19,6 +19,10 @@ import {
   resolveCompanionCodexSessionHome,
 } from "./codex-home.js";
 
+/**
+ * Redacts sensitive flag values from a shell command string for logging.
+ * Masks values after --settings and -c flags.
+ */
 function redactInlineShellFlagValues(command: string): string {
   const tokens = command.match(/'(?:[^']|'\\'')*'|"(?:[^"\\]|\\.)*"|\S+/g);
   if (!tokens) return command;

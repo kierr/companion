@@ -78,6 +78,11 @@ function resolveBranchDiffBases(
   return ["main"];
 }
 
+/**
+ * Normalizes and validates Claude settings JSON.
+ * Accepts undefined, null, or a JSON string.
+ * Returns the validated JSON string or an error message.
+ */
 function normalizeClaudeSettings(input: unknown): { ok: true; value?: string } | { ok: false; error: string } {
   if (input === undefined || input === null) return { ok: true, value: undefined };
   if (typeof input !== "string") {
@@ -100,6 +105,11 @@ function normalizeClaudeSettings(input: unknown): { ok: true; value?: string } |
 
 const CODEX_CONFIG_KEY_PATH_RE = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/;
 
+/**
+ * Normalizes and validates Codex configuration entries.
+ * Accepts undefined, null, a newline-delimited string, or a string array.
+ * Each entry must be in key=value format with valid TOML values.
+ */
 function normalizeCodexConfig(input: unknown): { ok: true; value?: string[] } | { ok: false; error: string } {
   if (input === undefined || input === null) return { ok: true, value: undefined };
 
@@ -112,6 +122,12 @@ function normalizeCodexConfig(input: unknown): { ok: true; value?: string[] } | 
   } else if (Array.isArray(input)) {
     if (!input.every((item) => typeof item === "string")) {
       return { ok: false, error: "codexConfig entries must be strings in key=value form" };
+    }
+    // Reject entries with embedded newlines
+    for (const item of input) {
+      if (item.includes("\n") || item.includes("\r")) {
+        return { ok: false, error: "codexConfig array entries must not contain newlines" };
+      }
     }
     entries = input.map((line) => line.trim()).filter((line) => line.length > 0);
   } else {
@@ -231,7 +247,16 @@ export function createRoutes(
 
       // Resolve Docker image from environment or explicit container config
       const companionEnv = body.envSlug ? envManager.getEnv(body.envSlug) : null;
-      const claudeSettings = backend === "claude" ? companionEnv?.claudeSettings : undefined;
+      let claudeSettings: string | undefined;
+      if (backend === "claude") {
+        const normalizedEnvClaudeSettings = normalizeClaudeSettings(companionEnv?.claudeSettings);
+        if (!normalizedEnvClaudeSettings.ok) {
+          return c.json({
+            error: `Selected environment has invalid claudeSettings: ${normalizedEnvClaudeSettings.error}`,
+          }, 400);
+        }
+        claudeSettings = normalizedEnvClaudeSettings.value;
+      }
       let codexConfigOverrides: string[] | undefined;
       if (backend === "codex") {
         const normalizedEnvCodexConfig = normalizeCodexConfig(companionEnv?.codexConfig);
@@ -462,7 +487,21 @@ export function createRoutes(
 
         let envVars: Record<string, string> | undefined = body.env;
         const companionEnv = body.envSlug ? envManager.getEnv(body.envSlug) : null;
-        const claudeSettings = backend === "claude" ? companionEnv?.claudeSettings : undefined;
+        let claudeSettings: string | undefined;
+        if (backend === "claude") {
+          const normalizedEnvClaudeSettings = normalizeClaudeSettings(companionEnv?.claudeSettings);
+          if (!normalizedEnvClaudeSettings.ok) {
+            await stream.writeSSE({
+              event: "error",
+              data: JSON.stringify({
+                error: `Selected environment has invalid claudeSettings: ${normalizedEnvClaudeSettings.error}`,
+                step: "resolving_env",
+              }),
+            });
+            return;
+          }
+          claudeSettings = normalizedEnvClaudeSettings.value;
+        }
         let codexConfigOverrides: string[] | undefined;
         if (backend === "codex") {
           const normalizedEnvCodexConfig = normalizeCodexConfig(companionEnv?.codexConfig);

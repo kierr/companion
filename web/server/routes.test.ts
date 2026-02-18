@@ -969,6 +969,23 @@ describe("POST /api/envs", () => {
     expect(envManager.createEnv).not.toHaveBeenCalled();
   });
 
+  it("returns 400 for codexConfig array entries with embedded newlines", async () => {
+    // Array entries must not contain newlines - should be separate entries instead
+    const res = await app.request("/api/envs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "Newline Config",
+        codexConfig: ["model=o3\nshell_environment_policy.inherit=all"],
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    const json = await res.json();
+    expect(json).toEqual({ error: "codexConfig array entries must not contain newlines" });
+    expect(envManager.createEnv).not.toHaveBeenCalled();
+  });
+
   it("returns 400 when createEnv throws", async () => {
     vi.mocked(envManager.createEnv).mockImplementation(() => {
       throw new Error("Environment name is required");
@@ -1015,6 +1032,8 @@ describe("PUT /api/envs/:slug", () => {
       ports: undefined,
       volumes: undefined,
       initScript: undefined,
+      claudeSettings: undefined,
+      codexConfig: undefined,
     });
   });
 
@@ -1055,6 +1074,21 @@ describe("PUT /api/envs/:slug", () => {
     expect(res.status).toBe(400);
     const json = await res.json();
     expect(json.error).toContain("must have a valid TOML value after '='");
+  });
+
+  it("returns 400 for codexConfig array entries with embedded newlines on update", async () => {
+    // Array entries must not contain newlines - should be separate entries instead
+    const res = await app.request("/api/envs/production", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        codexConfig: ["model=o3\nshell_environment_policy.inherit=all"],
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    const json = await res.json();
+    expect(json).toEqual({ error: "codexConfig array entries must not contain newlines" });
     expect(envManager.updateEnv).not.toHaveBeenCalled();
   });
 });
@@ -1820,6 +1854,29 @@ describe("POST /api/sessions/create with backend", () => {
     expect(res.status).toBe(400);
     const json = await res.json();
     expect(json.error).toContain("Selected environment has invalid codexConfig");
+    expect(launcher.launch).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when environment has invalid claudeSettings", async () => {
+    vi.mocked(envManager.getEnv).mockReturnValue({
+      name: "Invalid Settings",
+      slug: "invalid-settings",
+      variables: {},
+      // Invalid: JSON string is malformed
+      claudeSettings: '{"invalid": "json',
+      createdAt: 1,
+      updatedAt: 1,
+    });
+
+    const res = await app.request("/api/sessions/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cwd: "/test", backend: "claude", envSlug: "invalid-settings" }),
+    });
+
+    expect(res.status).toBe(400);
+    const json = await res.json();
+    expect(json.error).toContain("Selected environment has invalid claudeSettings");
     expect(launcher.launch).not.toHaveBeenCalled();
   });
 });

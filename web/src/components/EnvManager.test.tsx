@@ -206,6 +206,27 @@ describe("EnvManager existing env edit", () => {
     expect(await screen.findByText(/must have a valid TOML value after '='/)).toBeTruthy();
     expect(mockUpdateEnv).not.toHaveBeenCalled();
   });
+
+  it("normalizes whitespace around = in Codex config entries", async () => {
+    render(<EnvManager embedded />);
+    await screen.findByText("Companion");
+    fireEvent.click(screen.getByText("Edit"));
+
+    const codexArea = screen.getByPlaceholderText(/shell_environment_policy\.inherit="all"/) as HTMLTextAreaElement;
+    // Input has spaces around = which should be normalized
+    fireEvent.change(codexArea, { target: { value: "model = \"o3\"\nfoo.bar  =  42" } });
+    fireEvent.click(screen.getByText("Save"));
+
+    await waitFor(() => {
+      expect(mockUpdateEnv).toHaveBeenCalledWith(
+        "companion",
+        expect.objectContaining({
+          // Whitespace around = should be removed
+          codexConfig: ["model=\"o3\"", "foo.bar=42"],
+        }),
+      );
+    });
+  });
 });
 
 describe("EnvManager create flow", () => {
